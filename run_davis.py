@@ -81,7 +81,7 @@ def test(args):
 
         # build per-video expression list from text annotations
         data = {}
-        with open(meta_file, 'r', encoding='utf-8') as f:
+        with open(meta_file, 'r', encoding='utf-8', errors='ignore') as f:
             for line in f:
                 line = line.strip()
                 if not line:
