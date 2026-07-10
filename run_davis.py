@@ -63,13 +63,16 @@ def test(args):
         save_path_prefix = os.path.join(output_dir, 'Ref_DAVIS', 'anno_' + anno)
         if not os.path.exists(save_path_prefix):
             os.makedirs(save_path_prefix)
-        # Robustly locate the annotation file (case-insensitive and variant-safe)
+        # Robustly locate the annotation file (case-insensitive and recursive os.walk)
         meta_file = None
         if os.path.exists(meta_dir):
-            for filename in os.listdir(meta_dir):
-                fn_lower = filename.lower()
-                if f"annot{anno}" in fn_lower or f"annot_{anno}" in fn_lower:
-                    meta_file = os.path.join(meta_dir, filename)
+            for r_d, dirs_d, files_d in os.walk(meta_dir):
+                for filename in files_d:
+                    fn_lower = filename.lower()
+                    if f"annot{anno}" in fn_lower or f"annot_{anno}" in fn_lower:
+                        meta_file = os.path.join(r_d, filename)
+                        break
+                if meta_file:
                     break
         
         if not meta_file or not os.path.exists(meta_file):
