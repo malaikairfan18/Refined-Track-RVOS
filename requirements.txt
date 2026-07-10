@@ -11,7 +11,6 @@ transformers
 timm
 torchscale
 opencv-python
-simpletransformers
 accelerate
 gradio
 imageio
