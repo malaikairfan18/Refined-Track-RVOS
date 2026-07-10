@@ -1,0 +1,17 @@
+torch>=2.0.0
+torchvision
+tqdm
+loralib
+ftfy
+regex
+omegaconf
+hydra-core
+requests
+transformers
+timm
+torchscale
+opencv-python
+simpletransformers
+accelerate
+gradio
+imageio
