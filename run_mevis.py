@@ -2,6 +2,7 @@ import alphaclip
 from cutie.inference.inference_core import InferenceCore
 from cutie.utils.get_default_model import get_default_model
 from utils import *
+from resam_modules import refine_and_requery_keyframe, SoftSemanticAlignment
 import os
 import shutil
 import cv2
@@ -17,13 +18,13 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
-def test():
+def test(args):
 
     # initialize EVF-SAM
-    tokenizer, evfsam = init_models()
+    tokenizer, evfsam = init_models(cache_dir=args.cache_dir)
 
     # initialize Alpha-CLIP
-    clip, clip_preprocess = alphaclip.load('ViT-L/14@336px', alpha_vision_ckpt_pth='weights/clip_l14_336_grit_20m_4xe.pth', device='cuda')
+    clip, clip_preprocess = alphaclip.load('ViT-L/14@336px', alpha_vision_ckpt_pth=args.clip_weights, device='cuda')
     clip_preprocess_mask = transforms.Compose([transforms.Resize((336, 336)), transforms.Normalize(0.5, 0.26)])
 
     # initialize Cutie
@@ -31,13 +32,36 @@ def test():
     processor = InferenceCore(cutie, cfg=cutie.cfg)
 
     # load videos
-    output_dir = 'outputs'
+    output_dir = args.output_dir
     save_path_prefix = os.path.join(output_dir, 'MeViS_val')
     if not os.path.exists(save_path_prefix):
         os.makedirs(save_path_prefix)
-    root = '../DB/RVOS/MeViS'
-    img_folder = os.path.join(root, 'valid', 'JPEGImages')
-    meta_file = os.path.join(root, 'valid', 'meta_expressions.json')
+        
+    root_path = args.dataset_path
+    img_folder = None
+    meta_file = None
+
+    print(f"Scanning dataset path for MeViS files: {root_path}")
+    for dirpath, dirnames, filenames in os.walk(root_path):
+        if 'JPEGImages' in dirnames and 'valid' in dirpath.lower() and not img_folder:
+            img_folder = os.path.join(dirpath, 'JPEGImages')
+        if 'meta_expressions.json' in filenames and 'valid' in dirpath.lower() and not meta_file:
+            meta_file = os.path.join(dirpath, 'meta_expressions.json')
+
+    # Fallback to direct path joins
+    if not img_folder:
+        img_folder = os.path.join(root_path, 'valid', 'JPEGImages')
+    if not meta_file:
+        meta_file = os.path.join(root_path, 'valid', 'meta_expressions.json')
+
+    print(f"🔍 Auto-detected image folder: {img_folder}")
+    print(f"🔍 Auto-detected validation metadata: {meta_file}")
+
+    if not img_folder or not os.path.exists(img_folder):
+        raise FileNotFoundError(f"❌ JPEGImages folder not found: {img_folder}")
+    if not meta_file or not os.path.exists(meta_file):
+        raise FileNotFoundError(f"❌ Validation metadata file not found: {meta_file}")
+
     with open(meta_file, 'r') as f:
         data = json.load(f)['videos']
     valid_videos = set(data.keys())
@@ -129,41 +153,100 @@ def test():
             # select reference frame with highest mask score
             best_ref_idx = torch.argmax(torch.stack(ref_scores, dim=0), dim=0)
             best_i = int(best_ref_idx * (video_len - 1) / (ref_num - 1))
+
+            # Apply R³-Loop Keyframe Refinement & SAM Box Re-query
+            refined_ref_mask = refine_and_requery_keyframe(
+                ref_masks[best_ref_idx], 
+                imgs_sam[best_i], 
+                evfsam, 
+                resize_shape, 
+                original_size_list
+            )
+
+            # Initialize SSA Module (using 768 to match Alpha-CLIP ViT-L/14)
+            ssa_controller = SoftSemanticAlignment(queue_size=128, embedding_dim=768).cuda()
+            
+            # Extract visual embedding for the initial refined mask
+            with torch.no_grad():
+                alpha = clip_preprocess_mask(refined_ref_mask).cuda()
+                initial_emb = clip.visual(imgs_clip[best_i].unsqueeze(0).cuda(), alpha.unsqueeze(0))
+                initial_emb = initial_emb / initial_emb.norm(dim=-1, keepdim=True)
+                
+            # Initialize the FIFO queue with the keyframe anchor embedding
+            ssa_controller.queue.copy_(initial_emb.repeat(128, 1))
+
             # forward pass
             for i in range(best_i, video_len):
                 if i == best_i:
-                    mask_prob = processor.step(imgs_cutie[i].cuda(), ref_masks[best_ref_idx].squeeze(0), objects=[1])
+                    mask_prob = processor.step(imgs_cutie[i].cuda(), refined_ref_mask.squeeze(0), objects=[1])
                 else:
                     mask_prob = processor.step(imgs_cutie[i].cuda())
                 mask = processor.output_prob_to_mask(mask_prob).float()
+
+                # SSA Gated Memory Update check
+                with torch.no_grad():
+                    alpha = clip_preprocess_mask(mask.unsqueeze(0)).cuda()
+                    current_emb = clip.visual(imgs_clip[i].unsqueeze(0).cuda(), alpha.unsqueeze(0))
+                    current_emb = current_emb / current_emb.norm(dim=-1, keepdim=True)
+                    
+                    loss_ssa = ssa_controller(current_emb, update_queue=False)
+                    similarity = 1.0 - loss_ssa.item()
+                    
+                # If similarity is low, we gate memory update to prevent poisoning
+                if similarity < 0.6:
+                    processor.mem_every = 999999
+                else:
+                    processor.mem_every = processor.cfg.mem_every
+                    # Enqueue only stable embeddings to the queue
+                    ssa_controller._dequeue_and_enqueue(current_emb)
 
                 # clear memory for each sequence
                 if i == video_len - 1:
                     processor.clear_memory()
 
                 # convert format
-                mask = mask.detach().cpu().numpy().astype(np.float32)
-                mask = Image.fromarray(mask * 255).convert('L')
+                mask_np = mask.detach().cpu().numpy().astype(np.float32)
+                mask_img = Image.fromarray(mask_np * 255).convert('L')
                 save_file = os.path.join(save_path, frames[i] + '.png')
-                mask.save(save_file)
+                mask_img.save(save_file)
+
+            # Re-initialize SSA queue for backward pass to default to anchor state
+            ssa_controller.queue.copy_(initial_emb.repeat(128, 1))
+            ssa_controller.ptr.zero_()
+            processor.mem_every = processor.cfg.mem_every
 
             # backward pass
             for i in range(best_i, -1, -1):
                 if i == best_i:
-                    mask_prob = processor.step(imgs_cutie[i].cuda(), ref_masks[best_ref_idx].squeeze(0), objects=[1])
+                    mask_prob = processor.step(imgs_cutie[i].cuda(), refined_ref_mask.squeeze(0), objects=[1])
                 else:
                     mask_prob = processor.step(imgs_cutie[i].cuda())
                 mask = processor.output_prob_to_mask(mask_prob).float()
+
+                # SSA Gated Memory Update check
+                with torch.no_grad():
+                    alpha = clip_preprocess_mask(mask.unsqueeze(0)).cuda()
+                    current_emb = clip.visual(imgs_clip[i].unsqueeze(0).cuda(), alpha.unsqueeze(0))
+                    current_emb = current_emb / current_emb.norm(dim=-1, keepdim=True)
+                    
+                    loss_ssa = ssa_controller(current_emb, update_queue=False)
+                    similarity = 1.0 - loss_ssa.item()
+                    
+                if similarity < 0.6:
+                    processor.mem_every = 999999
+                else:
+                    processor.mem_every = processor.cfg.mem_every
+                    ssa_controller._dequeue_and_enqueue(current_emb)
 
                 # clear memory for each sequence
                 if i == 0:
                     processor.clear_memory()
 
                 # convert format
-                mask = mask.detach().cpu().numpy().astype(np.float32)
-                mask = Image.fromarray(mask * 255).convert('L')
+                mask_np = mask.detach().cpu().numpy().astype(np.float32)
+                mask_img = Image.fromarray(mask_np * 255).convert('L')
                 save_file = os.path.join(save_path, frames[i] + '.png')
-                mask.save(save_file)
+                mask_img.save(save_file)
 
     print(f"Zipping results for Codabench submission...")
     zip_name = shutil.make_archive(save_path_prefix, 'zip', save_path_prefix)
@@ -171,6 +254,14 @@ def test():
 
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description="Refined Track RVOS - MeViS inference")
+    parser.add_argument('--dataset_path', type=str, default='../DB/RVOS/MeViS', help='Path to MeViS dataset')
+    parser.add_argument('--cache_dir', type=str, default='../huggingface', help='HuggingFace cache directory')
+    parser.add_argument('--clip_weights', type=str, default='weights/clip_l14_336_grit_20m_4xe.pth', help='Path to Alpha-CLIP weights')
+    parser.add_argument('--output_dir', type=str, default='outputs', help='Output directory')
+    args = parser.parse_args()
+
     torch.cuda.set_device(0)
     with torch.no_grad(), torch.cuda.amp.autocast(enabled=True, dtype=torch.float16):
-        test()
+        test(args)
