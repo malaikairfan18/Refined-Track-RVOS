@@ -16,13 +16,13 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
-def test():
+def test(args):
 
     # initialize EVF-SAM
-    tokenizer, evfsam = init_models()
+    tokenizer, evfsam = init_models(cache_dir=args.cache_dir)
 
     # initialize Alpha-CLIP
-    clip, clip_preprocess = alphaclip.load('ViT-L/14@336px', alpha_vision_ckpt_pth='weights/clip_l14_336_grit_20m_4xe.pth', device='cuda')
+    clip, clip_preprocess = alphaclip.load('ViT-L/14@336px', alpha_vision_ckpt_pth=args.clip_weights, device='cuda')
     clip_preprocess_mask = transforms.Compose([transforms.Resize((336, 336)), transforms.Normalize(0.5, 0.26)])
 
     # initialize Cutie
@@ -30,16 +30,40 @@ def test():
     processor = InferenceCore(cutie, cfg=cutie.cfg)
 
     # load videos
-    output_dir = 'outputs'
-    root = '/home/sayy/Documents/DB/RVOS/DAVIS'
-    img_folder = os.path.join(root, 'JPEGImages', '480p')
+    output_dir = args.output_dir
+    root_path = args.dataset_path
+    
+    img_folder = None
+    meta_dir = None
+
+    print(f"Scanning dataset path for DAVIS files: {root_path}")
+    for dirpath, dirnames, filenames in os.walk(root_path):
+        if 'JPEGImages' in dirnames:
+            p = os.path.join(dirpath, 'JPEGImages')
+            if os.path.exists(os.path.join(p, '480p')):
+                img_folder = os.path.join(p, '480p')
+            else:
+                img_folder = p
+        if 'davis_text_annotations' in dirnames:
+            meta_dir = os.path.join(dirpath, 'davis_text_annotations')
+        elif 'Davis17_annot1.txt' in filenames and not meta_dir:
+            meta_dir = dirpath
+
+    # Fallback to direct path joins
+    if not img_folder:
+        img_folder = os.path.join(root_path, 'JPEGImages', '480p')
+    if not meta_dir:
+        meta_dir = os.path.join(root_path, 'davis_text_annotations')
+
+    print(f"🔍 Auto-detected image folder: {img_folder}")
+    print(f"🔍 Auto-detected metadata directory: {meta_dir}")
 
     # Ref-DAVIS has two annotators; evaluate both
     for anno in ['1', '2']:
         save_path_prefix = os.path.join(output_dir, 'Ref_DAVIS', 'anno_' + anno)
         if not os.path.exists(save_path_prefix):
             os.makedirs(save_path_prefix)
-        meta_file = os.path.join(root, 'davis_text_annotations', 'Davis17_annot' + anno + '.txt')
+        meta_file = os.path.join(meta_dir, 'Davis17_annot' + anno + '.txt')
 
         # build per-video expression list from text annotations
         data = {}
@@ -223,6 +247,14 @@ def test():
 
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description="Refined Track RVOS - DAVIS inference")
+    parser.add_argument('--dataset_path', type=str, default='/home/sayy/Documents/DB/RVOS/DAVIS', help='Path to DAVIS dataset')
+    parser.add_argument('--cache_dir', type=str, default='../huggingface', help='HuggingFace cache directory')
+    parser.add_argument('--clip_weights', type=str, default='weights/clip_l14_336_grit_20m_4xe.pth', help='Path to Alpha-CLIP weights')
+    parser.add_argument('--output_dir', type=str, default='outputs', help='Output directory')
+    args = parser.parse_args()
+
     torch.cuda.set_device(0)
     with torch.no_grad(), torch.cuda.amp.autocast(enabled=True, dtype=torch.float16):
-        test()
+        test(args)
