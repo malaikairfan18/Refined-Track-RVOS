@@ -18,13 +18,13 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
-def test():
+def test(args):
 
     # initialize EVF-SAM
-    tokenizer, evfsam = init_models()
+    tokenizer, evfsam = init_models(cache_dir=args.cache_dir)
 
     # initialize Alpha-CLIP
-    clip, clip_preprocess = alphaclip.load('ViT-L/14@336px', alpha_vision_ckpt_pth='weights/clip_l14_336_grit_20m_4xe.pth', device='cuda')
+    clip, clip_preprocess = alphaclip.load('ViT-L/14@336px', alpha_vision_ckpt_pth=args.clip_weights, device='cuda')
     clip_preprocess_mask = transforms.Compose([transforms.Resize((336, 336)), transforms.Normalize(0.5, 0.26)])
 
     # initialize Cutie
@@ -32,11 +32,11 @@ def test():
     processor = InferenceCore(cutie, cfg=cutie.cfg)
 
     # load videos
-    output_dir = 'outputs'
+    output_dir = args.output_dir
     save_path_prefix = os.path.join(output_dir, 'Ref_YTVOS_val')
     if not os.path.exists(save_path_prefix):
         os.makedirs(save_path_prefix)
-    root = '../DB/RVOS/YTVOS'
+    root = args.dataset_path
     img_folder = os.path.join(root, 'valid', 'JPEGImages')
     meta_file = os.path.join(root, 'meta_expressions', 'valid', 'meta_expressions.json')
     with open(meta_file, 'r') as f:
@@ -236,6 +236,14 @@ def test():
 
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description="Refined Track RVOS - YouTube-VOS inference")
+    parser.add_argument('--dataset_path', type=str, default='../DB/RVOS/YTVOS', help='Path to YTVOS dataset')
+    parser.add_argument('--cache_dir', type=str, default='../huggingface', help='HuggingFace cache directory')
+    parser.add_argument('--clip_weights', type=str, default='weights/clip_l14_336_grit_20m_4xe.pth', help='Path to Alpha-CLIP weights')
+    parser.add_argument('--output_dir', type=str, default='outputs', help='Output directory')
+    args = parser.parse_args()
+
     torch.cuda.set_device(0)
     with torch.no_grad(), torch.cuda.amp.autocast(enabled=True, dtype=torch.float16):
-        test()
+        test(args)

@@ -33,9 +33,9 @@ def beit3_preprocess(x: np.ndarray, img_size=224) -> torch.Tensor:
     return beit_preprocess(x)
 
 
-def init_models():
+def init_models(cache_dir='../huggingface'):
     tokenizer = AutoTokenizer.from_pretrained('YxZhang/evf-sam-multitask', padding_side='right', use_fast=False)
-    evfsam = EvfSamModel.from_pretrained('YxZhang/evf-sam-multitask', low_cpu_mem_usage=True, cache_dir='../huggingface')
+    evfsam = EvfSamModel.from_pretrained('YxZhang/evf-sam-multitask', low_cpu_mem_usage=True, cache_dir=cache_dir)
     evfsam = evfsam.cuda()
     evfsam.eval()
     return tokenizer, evfsam
