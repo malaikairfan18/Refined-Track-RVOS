@@ -73,6 +73,7 @@ def refine_and_requery_keyframe(initial_prob_mask, image, sam_model, resize_shap
             points=None,
             boxes=scaled_box,
             masks=None,
+            text_embeds=None,
         )
         
         # Run mask decoder
