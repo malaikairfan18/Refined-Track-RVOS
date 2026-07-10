@@ -62,7 +62,7 @@ def refine_and_requery_keyframe(initial_prob_mask, image, sam_model, resize_shap
         box[1].item() * scale_y,
         box[2].item() * scale_x,
         box[3].item() * scale_y
-    ]], dtype=torch.float32, device=image.device).unsqueeze(0)
+    ]], dtype=torch.float32, device='cuda').unsqueeze(0)
     
     with torch.no_grad():
         # Get image embedding
