@@ -165,7 +165,7 @@ def test(args):
             )
 
             # Initialize SSA Module
-            ssa_controller = SoftSemanticAlignment(queue_size=128, embedding_dim=256).cuda()
+            ssa_controller = SoftSemanticAlignment(queue_size=128, embedding_dim=768).cuda()
             
             # Extract visual embedding for the initial refined mask
             with torch.no_grad():
