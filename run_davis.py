@@ -63,7 +63,18 @@ def test(args):
         save_path_prefix = os.path.join(output_dir, 'Ref_DAVIS', 'anno_' + anno)
         if not os.path.exists(save_path_prefix):
             os.makedirs(save_path_prefix)
-        meta_file = os.path.join(meta_dir, 'Davis17_annot' + anno + '.txt')
+        # Robustly locate the annotation file (case-insensitive and variant-safe)
+        meta_file = None
+        if os.path.exists(meta_dir):
+            for filename in os.listdir(meta_dir):
+                fn_lower = filename.lower()
+                if f"annot{anno}" in fn_lower or f"annot_{anno}" in fn_lower:
+                    meta_file = os.path.join(meta_dir, filename)
+                    break
+        
+        if not meta_file or not os.path.exists(meta_file):
+            print(f"⚠️ Warning: Annotation file for annotator {anno} not found in {meta_dir}. Skipping.")
+            continue
 
         # build per-video expression list from text annotations
         data = {}
