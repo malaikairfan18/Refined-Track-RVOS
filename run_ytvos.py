@@ -36,13 +36,32 @@ def test(args):
     save_path_prefix = os.path.join(output_dir, 'Ref_YTVOS_val')
     if not os.path.exists(save_path_prefix):
         os.makedirs(save_path_prefix)
-    root = args.dataset_path
-    img_folder = os.path.join(root, 'valid', 'JPEGImages')
-    meta_file = os.path.join(root, 'meta_expressions', 'valid', 'meta_expressions.json')
+    
+    root_path = args.dataset_path
+    img_folder = None
+    meta_file = None
+    test_meta_file = None
+
+    print(f"Scanning dataset path for files: {root_path}")
+    for dirpath, dirnames, filenames in os.walk(root_path):
+        if 'JPEGImages' in dirnames and 'valid' in dirpath.lower() and not img_folder:
+            img_folder = os.path.join(dirpath, 'JPEGImages')
+        if 'meta_expressions.json' in filenames:
+            if 'valid' in dirpath.lower() and not meta_file:
+                meta_file = os.path.join(dirpath, 'meta_expressions.json')
+            elif 'test' in dirpath.lower() and not test_meta_file:
+                test_meta_file = os.path.join(dirpath, 'meta_expressions.json')
+
+    print(f"🔍 Auto-detected image folder: {img_folder}")
+    print(f"🔍 Auto-detected validation metadata: {meta_file}")
+    print(f"🔍 Auto-detected test metadata: {test_meta_file}")
+
+    if not img_folder or not meta_file or not test_meta_file:
+        raise FileNotFoundError("❌ Could not auto-detect JPEGImages or meta_expressions.json inside the provided dataset path.")
+
     with open(meta_file, 'r') as f:
         data = json.load(f)['videos']
     valid_test_videos = set(data.keys())
-    test_meta_file = os.path.join(root, 'meta_expressions', 'test', 'meta_expressions.json')
     with open(test_meta_file, 'r') as f:
         test_data = json.load(f)['videos']
     test_videos = set(test_data.keys())
